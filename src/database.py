@@ -2,6 +2,8 @@ import sqlite3
 import pandas as pd
 from typing import List, Dict, Tuple
 import logging
+import numpy as np
+from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -131,3 +133,81 @@ class Database:
         except sqlite3.Error as e:
             logger.error(f"Error fetching historical data: {str(e)}")
             raise
+
+    def get_daily_transaction_stats(self) -> pd.DataFrame:
+        """Get daily transaction statistics"""
+        query = """
+        WITH daily_activity AS (
+            SELECT 
+                date(last_in) as activity_date,
+                COUNT(*) as incoming_txs,
+                SUM(balance) as total_volume
+            FROM wallets
+            WHERE last_in != ''
+            GROUP BY date(last_in)
+            UNION ALL
+            SELECT 
+                date(last_out) as activity_date,
+                COUNT(*) * -1 as incoming_txs,
+                SUM(balance) * -1 as total_volume
+            FROM wallets
+            WHERE last_out != '' AND last_out != 'Never'
+            GROUP BY date(last_out)
+        )
+        SELECT 
+            activity_date,
+            SUM(incoming_txs) as net_transactions,
+            SUM(total_volume) as net_volume
+        FROM daily_activity
+        GROUP BY activity_date
+        ORDER BY activity_date DESC
+        LIMIT 30
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                return pd.read_sql_query(query, conn)
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching daily transaction stats: {str(e)}")
+            raise
+
+    def get_market_signal(self) -> Dict:
+        """Generate buy/sell signal based on recent wallet activity"""
+        try:
+            stats_df = self.get_daily_transaction_stats()
+            if stats_df.empty:
+                return {"signal": "NEUTRAL", "confidence": 0.0, "reason": "Insufficient data"}
+
+            # Calculate 7-day moving averages
+            stats_df['net_tx_ma7'] = stats_df['net_transactions'].rolling(7).mean()
+            stats_df['net_volume_ma7'] = stats_df['net_volume'].rolling(7).mean()
+
+            # Get latest trends
+            recent_tx_trend = stats_df['net_tx_ma7'].iloc[0] if len(stats_df) > 0 else 0
+            recent_volume_trend = stats_df['net_volume_ma7'].iloc[0] if len(stats_df) > 0 else 0
+
+            # Generate signal
+            if recent_tx_trend > 0 and recent_volume_trend > 0:
+                signal = "BUY"
+                confidence = min(abs(recent_tx_trend / 10), 1.0)
+                reason = "Positive transaction and volume trends"
+            elif recent_tx_trend < 0 and recent_volume_trend < 0:
+                signal = "SELL"
+                confidence = min(abs(recent_tx_trend / 10), 1.0)
+                reason = "Negative transaction and volume trends"
+            else:
+                signal = "NEUTRAL"
+                confidence = 0.5
+                reason = "Mixed signals in transaction and volume trends"
+
+            return {
+                "signal": signal,
+                "confidence": confidence,
+                "reason": reason,
+                "metrics": {
+                    "tx_trend": float(recent_tx_trend),
+                    "volume_trend": float(recent_volume_trend)
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error generating market signal: {str(e)}")
+            return {"signal": "ERROR", "confidence": 0.0, "reason": str(e)}
