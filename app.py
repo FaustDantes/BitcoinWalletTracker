@@ -52,7 +52,6 @@ def main():
             except Exception as e:
                 st.error(f"Error updating data: {str(e)}")
 
-    # Main content
     try:
         df = db.get_latest_wallets()
         
@@ -66,6 +65,57 @@ def main():
         with col3:
             avg_btc = df['balance'].mean()
             st.metric("Average BTC per Wallet", format_balance(avg_btc))
+
+        # Duplicate Balance Wallets
+        st.header("Wallets with Duplicate Balances")
+        duplicate_wallets = db.get_duplicate_balance_wallets()
+
+        if not duplicate_wallets.empty:
+            # Summary metrics for duplicate wallets
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total Duplicate Groups", 
+                         len(duplicate_wallets['balance'].unique()))
+            with col2:
+                st.metric("Total Wallets with Duplicates", 
+                         len(duplicate_wallets))
+
+            # Display duplicate wallets table
+            st.dataframe(
+                duplicate_wallets.style.format({
+                    'balance': lambda x: format_balance(x)
+                })
+            )
+        else:
+            st.info("No wallets with duplicate balances found")
+
+        # Balance Groups
+        st.header("Balance Groups")
+        balance_groups = db.get_balance_groups()
+
+        if not balance_groups.empty:
+            # Format the groups table
+            balance_groups['group_label'] = balance_groups['group_balance'].apply(format_balance)
+            balance_groups['last_activity'] = balance_groups.apply(
+                lambda x: f"In: {x['last_in_dates']}\nOut: {x['last_out_dates']}", 
+                axis=1
+            )
+
+            # Display balance groups
+            st.dataframe(
+                balance_groups[[
+                    'group_label', 
+                    'wallet_count', 
+                    'last_activity'
+                ]].rename(columns={
+                    'group_label': 'Balance Group',
+                    'wallet_count': 'Number of Wallets',
+                    'last_activity': 'Last Activity Dates'
+                })
+            )
+        else:
+            st.info("No balance groups found")
+
 
         # Search and filter
         search_term = st.text_input("Search wallet address")
@@ -108,11 +158,19 @@ def main():
                 file_name="btc_wallets.csv",
                 mime="text/csv"
             )
+        if st.button("Export Duplicate Wallets to CSV"):
+            csv = duplicate_wallets.to_csv(index=False)
+            st.download_button(
+                label="Download Duplicate Wallets CSV",
+                data=csv,
+                file_name="btc_duplicate_wallets.csv",
+                mime="text/csv"
+            )
 
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
+        logger.error(f"Application error: {str(e)}")
 
 if __name__ == "__main__":
     main()
-    # Start the scheduler
-    scheduler.start(pages_to_scan=20)
+    scheduler.start(20)  # Start with default 20 pages

@@ -1,6 +1,6 @@
 import sqlite3
 import pandas as pd
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -38,6 +38,69 @@ class Database:
                 df.to_sql('wallets', conn, if_exists='append', index=False)
         except Exception as e:
             logger.error(f"Error storing wallets: {str(e)}")
+            raise
+
+    def get_duplicate_balance_wallets(self) -> pd.DataFrame:
+        """Get wallets where the balance appears more than once"""
+        query = """
+        WITH duplicate_balances AS (
+            SELECT balance
+            FROM wallets w
+            INNER JOIN (
+                SELECT address, MAX(timestamp) as max_timestamp
+                FROM wallets
+                GROUP BY address
+            ) latest
+            ON w.address = latest.address AND w.timestamp = latest.max_timestamp
+            GROUP BY balance
+            HAVING COUNT(*) > 1
+        )
+        SELECT w.*
+        FROM wallets w
+        INNER JOIN (
+            SELECT address, MAX(timestamp) as max_timestamp
+            FROM wallets
+            GROUP BY address
+        ) latest
+        ON w.address = latest.address AND w.timestamp = latest.max_timestamp
+        WHERE w.balance IN (SELECT balance FROM duplicate_balances)
+        ORDER BY w.balance DESC
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                return pd.read_sql_query(query, conn)
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching duplicate balance wallets: {str(e)}")
+            raise
+
+    def get_balance_groups(self) -> pd.DataFrame:
+        """Get grouped wallet data by balance"""
+        query = """
+        WITH latest_wallet_data AS (
+            SELECT w.*
+            FROM wallets w
+            INNER JOIN (
+                SELECT address, MAX(timestamp) as max_timestamp
+                FROM wallets
+                GROUP BY address
+            ) latest
+            ON w.address = latest.address AND w.timestamp = latest.max_timestamp
+        )
+        SELECT 
+            balance as group_balance,
+            COUNT(*) as wallet_count,
+            GROUP_CONCAT(last_in) as last_in_dates,
+            GROUP_CONCAT(last_out) as last_out_dates
+        FROM latest_wallet_data
+        GROUP BY balance
+        HAVING COUNT(*) > 1
+        ORDER BY balance DESC
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                return pd.read_sql_query(query, conn)
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching balance groups: {str(e)}")
             raise
 
     def get_latest_wallets(self) -> pd.DataFrame:

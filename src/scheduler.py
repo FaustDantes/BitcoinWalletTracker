@@ -12,12 +12,13 @@ class DataCollectionScheduler:
         self.scheduler = BackgroundScheduler()
         self.scraper = BTCWalletScraper()
         self.db = Database()
+        self._pages = 20  # Default value
 
-    def collect_data(self, pages: int = 20):
+    def collect_data(self):
         """Collect and store wallet data"""
         try:
-            logger.info("Starting data collection")
-            wallets = self.scraper.scrape_wallets(pages)
+            logger.info(f"Starting data collection for {self._pages} pages")
+            wallets = self.scraper.scrape_wallets(self._pages)
             self.db.store_wallets(wallets)
             logger.info(f"Successfully collected data for {len(wallets)} wallets")
         except Exception as e:
@@ -25,16 +26,16 @@ class DataCollectionScheduler:
 
     def start(self, pages: int = 20):
         """Start the scheduler with daily data collection"""
+        self._pages = pages
         self.scheduler.add_job(
             func=self.collect_data,
             trigger=CronTrigger(hour=0),  # Run at midnight
-            args=[pages],
             id='daily_collection',
             name='Daily wallet data collection',
             replace_existing=True
         )
         self.scheduler.start()
-        logger.info("Scheduler started")
+        logger.info(f"Scheduler started with {pages} pages configuration")
 
     def stop(self):
         """Stop the scheduler"""
