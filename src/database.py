@@ -2,8 +2,7 @@ import sqlite3
 import pandas as pd
 from typing import List, Dict, Tuple
 import logging
-import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,40 +19,26 @@ class Database:
                 # Main wallets table
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS wallets (
-                        address TEXT PRIMARY KEY,
+                        address TEXT,
                         balance REAL,
                         first_in TEXT,
                         last_in TEXT,
                         last_out TEXT,
-                        first_seen TEXT,
-                        last_updated TEXT,
-                        total_transactions INTEGER DEFAULT 0,
-                        is_active BOOLEAN DEFAULT 1
-                    )
-                """)
-
-                # Wallet groups table
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS wallet_groups (
-                        group_id TEXT PRIMARY KEY,
-                        balance_value REAL,
-                        wallet_count INTEGER,
-                        first_wallet_seen TEXT,
-                        last_wallet_seen TEXT,
-                        last_updated TEXT,
-                        common_pattern TEXT,
-                        total_group_balance REAL
-                    )
-                """)
-
-                # Track scanning history
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS scans (
-                        scan_id TEXT PRIMARY KEY,
                         timestamp TEXT,
-                        pages_scanned INTEGER,
-                        total_wallets INTEGER,
-                        total_balance REAL
+                        PRIMARY KEY (address, timestamp)
+                    )
+                """)
+
+                # Wallet history table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS wallet_history (
+                        scan_timestamp TEXT,
+                        address TEXT,
+                        balance REAL,
+                        first_in TEXT,
+                        last_in TEXT,
+                        last_out TEXT,
+                        PRIMARY KEY (scan_timestamp, address)
                     )
                 """)
         except sqlite3.Error as e:
@@ -61,89 +46,25 @@ class Database:
             raise
 
     def store_wallets(self, wallets: List[Dict]):
-        """Store wallet data and update groups"""
+        """Store wallet data and update history"""
         try:
-            # Generate a unique scan ID
-            scan_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-            # Prepare wallet data
+            scan_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             df = pd.DataFrame(wallets)
+            df['timestamp'] = scan_timestamp
 
             with sqlite3.connect(self.db_path) as conn:
-                # Update existing wallets or insert new ones
-                for _, wallet in df.iterrows():
-                    conn.execute("""
-                        INSERT OR REPLACE INTO wallets 
-                        (address, balance, first_in, last_in, last_out, 
-                         first_seen, last_updated, total_transactions)
-                        VALUES (?, ?, ?, ?, ?, 
-                                COALESCE((SELECT first_seen FROM wallets WHERE address = ?), ?),
-                                ?, 
-                                COALESCE((SELECT total_transactions FROM wallets WHERE address = ?), 0) + 1)
-                    """, (
-                        wallet['address'], wallet['balance'], 
-                        wallet['first_in'], wallet['last_in'], wallet['last_out'],
-                        wallet['address'], current_time,
-                        current_time,
-                        wallet['address']
-                    ))
+                # Store in main wallets table
+                df.to_sql('wallets', conn, if_exists='append', index=False)
 
-                # Update wallet groups
-                self._update_wallet_groups(conn)
+                # Store in history table
+                history_df = df.copy()
+                history_df.rename(columns={'timestamp': 'scan_timestamp'}, inplace=True)
+                history_df.to_sql('wallet_history', conn, if_exists='append', index=False)
 
-                # Store scan metadata
-                scan_data = {
-                    'scan_id': scan_id,
-                    'timestamp': current_time,
-                    'pages_scanned': len(wallets) // 100 + 1,
-                    'total_wallets': len(wallets),
-                    'total_balance': df['balance'].sum() if 'balance' in df.columns else 0
-                }
-                pd.DataFrame([scan_data]).to_sql('scans', conn, if_exists='append', index=False)
-
-            logger.info(f"Successfully stored {len(wallets)} wallets with scan ID {scan_id}")
-            return scan_id
-
+            logger.info(f"Successfully stored {len(wallets)} wallets at {scan_timestamp}")
+            return scan_timestamp
         except Exception as e:
             logger.error(f"Error storing wallets: {str(e)}")
-            raise
-
-    def _update_wallet_groups(self, conn):
-        """Update wallet groups based on current wallet data"""
-        try:
-            # Find groups of wallets with same balance
-            groups = pd.read_sql_query("""
-                SELECT 
-                    balance as balance_value,
-                    COUNT(*) as wallet_count,
-                    MIN(first_seen) as first_wallet_seen,
-                    MAX(last_updated) as last_wallet_seen,
-                    SUM(balance) as total_group_balance
-                FROM wallets 
-                GROUP BY balance
-                HAVING COUNT(*) > 1
-            """, conn)
-
-            # Update groups table
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            for _, group in groups.iterrows():
-                group_id = f"BAL_{group['balance_value']}"
-                conn.execute("""
-                    INSERT OR REPLACE INTO wallet_groups 
-                    (group_id, balance_value, wallet_count, 
-                     first_wallet_seen, last_wallet_seen, 
-                     last_updated, total_group_balance)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    group_id, group['balance_value'], 
-                    group['wallet_count'], group['first_wallet_seen'],
-                    group['last_wallet_seen'], current_time,
-                    group['total_group_balance']
-                ))
-
-        except Exception as e:
-            logger.error(f"Error updating wallet groups: {str(e)}")
             raise
 
     def get_wallet_groups(self) -> pd.DataFrame:
@@ -296,12 +217,36 @@ class Database:
             GROUP BY address
         ) latest
         ON w.address = latest.address AND w.timestamp = latest.max_timestamp
+        ORDER BY balance DESC
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 return pd.read_sql_query(query, conn)
         except sqlite3.Error as e:
             logger.error(f"Error fetching latest wallets: {str(e)}")
+            raise
+
+    def get_wallet_history(self, address: str = None, limit: int = 100) -> pd.DataFrame:
+        """Get historical data for all wallets or a specific wallet"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                if address:
+                    query = """
+                    SELECT * FROM wallet_history 
+                    WHERE address = ? 
+                    ORDER BY scan_timestamp DESC 
+                    LIMIT ?
+                    """
+                    return pd.read_sql_query(query, conn, params=(address, limit))
+                else:
+                    query = """
+                    SELECT * FROM wallet_history 
+                    ORDER BY scan_timestamp DESC 
+                    LIMIT ?
+                    """
+                    return pd.read_sql_query(query, conn, params=(limit,))
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching wallet history: {str(e)}")
             raise
 
     def get_historical_data(self, address: str) -> pd.DataFrame:
