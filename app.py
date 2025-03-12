@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from src.scraper import BTCWalletScraper
 from src.database import Database
 from src.scheduler import DataCollectionScheduler
@@ -75,6 +76,21 @@ def main():
             white-space: pre-wrap;
             word-wrap: break-word;
         }
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 8px;
+            background-color: #2D2D2D;
+            padding: 8px;
+            border-radius: 4px;
+        }
+        .stTabs [data-baseweb="tab"] {
+            background-color: #404040;
+            color: #E0E0E0;
+            border-radius: 4px;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: #808080 !important;
+            color: #FFFFFF !important;
+        }
         </style>
     """, unsafe_allow_html=True)
 
@@ -148,7 +164,6 @@ def main():
 
             if not duplicate_wallets.empty:
                 duplicate_wallets['clean_address'] = duplicate_wallets['address'].apply(extract_btc_address)
-
                 col1, col2 = st.columns(2)
                 with col1:
                     st.metric("Total Duplicate Groups", 
