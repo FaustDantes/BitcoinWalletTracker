@@ -17,18 +17,36 @@ class Database:
         """Initialize database and create tables if they don't exist"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                # Main wallets table
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS wallets (
-                        address TEXT,
+                        address TEXT PRIMARY KEY,
                         balance REAL,
                         first_in TEXT,
                         last_in TEXT,
                         last_out TEXT,
-                        timestamp TEXT,
-                        scan_id TEXT,
-                        PRIMARY KEY (address, timestamp)
+                        first_seen TEXT,
+                        last_updated TEXT,
+                        total_transactions INTEGER DEFAULT 0,
+                        is_active BOOLEAN DEFAULT 1
                     )
                 """)
+
+                # Wallet groups table
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS wallet_groups (
+                        group_id TEXT PRIMARY KEY,
+                        balance_value REAL,
+                        wallet_count INTEGER,
+                        first_wallet_seen TEXT,
+                        last_wallet_seen TEXT,
+                        last_updated TEXT,
+                        common_pattern TEXT,
+                        total_group_balance REAL
+                    )
+                """)
+
+                # Track scanning history
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS scans (
                         scan_id TEXT PRIMARY KEY,
@@ -43,35 +61,151 @@ class Database:
             raise
 
     def store_wallets(self, wallets: List[Dict]):
-        """Store wallet data in the database with scan information"""
+        """Store wallet data and update groups"""
         try:
             # Generate a unique scan ID
             scan_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-            # Prepare wallet data with scan_id
+            # Prepare wallet data
             df = pd.DataFrame(wallets)
-            df['scan_id'] = scan_id
-
-            # Store scan metadata
-            scan_data = {
-                'scan_id': scan_id,
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'pages_scanned': len(wallets) // 100 + 1,  # Approximate based on typical page size
-                'total_wallets': len(wallets),
-                'total_balance': df['balance'].sum() if 'balance' in df.columns else 0
-            }
 
             with sqlite3.connect(self.db_path) as conn:
-                # Store wallet data
-                df.to_sql('wallets', conn, if_exists='append', index=False)
+                # Update existing wallets or insert new ones
+                for _, wallet in df.iterrows():
+                    conn.execute("""
+                        INSERT OR REPLACE INTO wallets 
+                        (address, balance, first_in, last_in, last_out, 
+                         first_seen, last_updated, total_transactions)
+                        VALUES (?, ?, ?, ?, ?, 
+                                COALESCE((SELECT first_seen FROM wallets WHERE address = ?), ?),
+                                ?, 
+                                COALESCE((SELECT total_transactions FROM wallets WHERE address = ?), 0) + 1)
+                    """, (
+                        wallet['address'], wallet['balance'], 
+                        wallet['first_in'], wallet['last_in'], wallet['last_out'],
+                        wallet['address'], current_time,
+                        current_time,
+                        wallet['address']
+                    ))
+
+                # Update wallet groups
+                self._update_wallet_groups(conn)
 
                 # Store scan metadata
+                scan_data = {
+                    'scan_id': scan_id,
+                    'timestamp': current_time,
+                    'pages_scanned': len(wallets) // 100 + 1,
+                    'total_wallets': len(wallets),
+                    'total_balance': df['balance'].sum() if 'balance' in df.columns else 0
+                }
                 pd.DataFrame([scan_data]).to_sql('scans', conn, if_exists='append', index=False)
 
             logger.info(f"Successfully stored {len(wallets)} wallets with scan ID {scan_id}")
             return scan_id
+
         except Exception as e:
             logger.error(f"Error storing wallets: {str(e)}")
+            raise
+
+    def _update_wallet_groups(self, conn):
+        """Update wallet groups based on current wallet data"""
+        try:
+            # Find groups of wallets with same balance
+            groups = pd.read_sql_query("""
+                SELECT 
+                    balance as balance_value,
+                    COUNT(*) as wallet_count,
+                    MIN(first_seen) as first_wallet_seen,
+                    MAX(last_updated) as last_wallet_seen,
+                    SUM(balance) as total_group_balance
+                FROM wallets 
+                GROUP BY balance
+                HAVING COUNT(*) > 1
+            """, conn)
+
+            # Update groups table
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            for _, group in groups.iterrows():
+                group_id = f"BAL_{group['balance_value']}"
+                conn.execute("""
+                    INSERT OR REPLACE INTO wallet_groups 
+                    (group_id, balance_value, wallet_count, 
+                     first_wallet_seen, last_wallet_seen, 
+                     last_updated, total_group_balance)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    group_id, group['balance_value'], 
+                    group['wallet_count'], group['first_wallet_seen'],
+                    group['last_wallet_seen'], current_time,
+                    group['total_group_balance']
+                ))
+
+        except Exception as e:
+            logger.error(f"Error updating wallet groups: {str(e)}")
+            raise
+
+    def get_wallet_groups(self) -> pd.DataFrame:
+        """Get all wallet groups"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                return pd.read_sql_query("""
+                    SELECT * FROM wallet_groups 
+                    ORDER BY wallet_count DESC, balance_value DESC
+                """, conn)
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching wallet groups: {str(e)}")
+            raise
+
+    def get_wallets_in_group(self, balance_value: float) -> pd.DataFrame:
+        """Get all wallets in a specific balance group"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                return pd.read_sql_query("""
+                    SELECT * FROM wallets 
+                    WHERE balance = ? 
+                    ORDER BY last_updated DESC
+                """, conn, params=(balance_value,))
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching wallets in group: {str(e)}")
+            raise
+
+    def get_all_wallets(self) -> pd.DataFrame:
+        """Get all wallets"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                return pd.read_sql_query("""
+                    SELECT * FROM wallets 
+                    ORDER BY balance DESC
+                """, conn)
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching all wallets: {str(e)}")
+            raise
+
+    def get_scan_stats(self, scan_id: str = None) -> Dict:
+        """Get statistics for a specific scan or the latest scan"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                if not scan_id:
+                    result = conn.execute("""
+                        SELECT scan_id FROM scans 
+                        ORDER BY timestamp DESC LIMIT 1
+                    """).fetchone()
+                    scan_id = result[0] if result else None
+
+                if not scan_id:
+                    return None
+
+                query = "SELECT * FROM scans WHERE scan_id = ?"
+                result = pd.read_sql_query(query, conn, params=(scan_id,))
+
+                if result.empty:
+                    return None
+
+                return result.iloc[0].to_dict()
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching scan stats: {str(e)}")
             raise
 
     def get_latest_scan_id(self) -> str:
@@ -88,28 +222,6 @@ class Database:
         except sqlite3.Error as e:
             logger.error(f"Error fetching latest scan ID: {str(e)}")
             raise
-
-    def get_scan_stats(self, scan_id: str = None) -> Dict:
-        """Get statistics for a specific scan or the latest scan"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                if not scan_id:
-                    scan_id = self.get_latest_scan_id()
-
-                if not scan_id:
-                    return None
-
-                query = "SELECT * FROM scans WHERE scan_id = ?"
-                result = pd.read_sql_query(query, conn, params=(scan_id,))
-
-                if result.empty:
-                    return None
-
-                return result.iloc[0].to_dict()
-        except sqlite3.Error as e:
-            logger.error(f"Error fetching scan stats: {str(e)}")
-            raise
-
     def get_duplicate_balance_wallets(self) -> pd.DataFrame:
         """Get wallets where the balance appears more than once"""
         query = """
