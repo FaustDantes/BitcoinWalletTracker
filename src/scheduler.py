@@ -19,8 +19,15 @@ class DataCollectionScheduler:
         try:
             logger.info(f"Starting data collection for {self._pages} pages")
             wallets = self.scraper.scrape_wallets(self._pages)
-            self.db.store_wallets(wallets)
-            logger.info(f"Successfully collected data for {len(wallets)} wallets")
+
+            # Store data and get scan ID
+            scan_id = self.db.store_wallets(wallets)
+
+            # Get and log scan statistics
+            stats = self.db.get_scan_stats(scan_id)
+            logger.info(f"Scan completed - ID: {scan_id}")
+            logger.info(f"Collected {stats['total_wallets']} wallets with total balance of {stats['total_balance']} BTC")
+
         except Exception as e:
             logger.error(f"Data collection failed: {str(e)}")
 

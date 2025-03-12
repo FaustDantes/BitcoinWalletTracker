@@ -25,7 +25,17 @@ class Database:
                         last_in TEXT,
                         last_out TEXT,
                         timestamp TEXT,
+                        scan_id TEXT,
                         PRIMARY KEY (address, timestamp)
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS scans (
+                        scan_id TEXT PRIMARY KEY,
+                        timestamp TEXT,
+                        pages_scanned INTEGER,
+                        total_wallets INTEGER,
+                        total_balance REAL
                     )
                 """)
         except sqlite3.Error as e:
@@ -33,13 +43,71 @@ class Database:
             raise
 
     def store_wallets(self, wallets: List[Dict]):
-        """Store wallet data in the database"""
+        """Store wallet data in the database with scan information"""
         try:
+            # Generate a unique scan ID
+            scan_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+            # Prepare wallet data with scan_id
             df = pd.DataFrame(wallets)
+            df['scan_id'] = scan_id
+
+            # Store scan metadata
+            scan_data = {
+                'scan_id': scan_id,
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'pages_scanned': len(wallets) // 100 + 1,  # Approximate based on typical page size
+                'total_wallets': len(wallets),
+                'total_balance': df['balance'].sum() if 'balance' in df.columns else 0
+            }
+
             with sqlite3.connect(self.db_path) as conn:
+                # Store wallet data
                 df.to_sql('wallets', conn, if_exists='append', index=False)
+
+                # Store scan metadata
+                pd.DataFrame([scan_data]).to_sql('scans', conn, if_exists='append', index=False)
+
+            logger.info(f"Successfully stored {len(wallets)} wallets with scan ID {scan_id}")
+            return scan_id
         except Exception as e:
             logger.error(f"Error storing wallets: {str(e)}")
+            raise
+
+    def get_latest_scan_id(self) -> str:
+        """Get the most recent scan ID"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                result = conn.execute("""
+                    SELECT scan_id 
+                    FROM scans 
+                    ORDER BY timestamp DESC 
+                    LIMIT 1
+                """).fetchone()
+                return result[0] if result else None
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching latest scan ID: {str(e)}")
+            raise
+
+    def get_scan_stats(self, scan_id: str = None) -> Dict:
+        """Get statistics for a specific scan or the latest scan"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                if not scan_id:
+                    scan_id = self.get_latest_scan_id()
+
+                if not scan_id:
+                    return None
+
+                query = "SELECT * FROM scans WHERE scan_id = ?"
+                result = pd.read_sql_query(query, conn, params=(scan_id,))
+
+                if result.empty:
+                    return None
+
+                return result.iloc[0].to_dict()
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching scan stats: {str(e)}")
             raise
 
     def get_duplicate_balance_wallets(self) -> pd.DataFrame:
