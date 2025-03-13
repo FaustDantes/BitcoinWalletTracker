@@ -123,9 +123,10 @@ def main():
                     logger.error(f"Data refresh error: {str(e)}")
 
     # Tab selection
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "Wallet Analysis", 
         "Duplicate Balances", 
+        "Groups Summary",
         "History",
         "Application Logs"
     ])
@@ -188,6 +189,40 @@ def main():
                 st.info("No wallets with duplicate balances found")
 
         with tab3:
+            st.subheader("Balance Groups Summary")
+            duplicate_wallets = db.get_duplicate_balance_wallets()
+            
+            if not duplicate_wallets.empty:
+                # Create summary dataframe with balance groups
+                balance_groups = []
+                for balance in duplicate_wallets['balance'].unique():
+                    group_wallets = duplicate_wallets[duplicate_wallets['balance'] == balance]
+                    balance_groups.append({
+                        'Group Balance': format_balance(balance),
+                        'Raw Balance': balance,
+                        'Number of Wallets': len(group_wallets)
+                    })
+                
+                # Convert to dataframe and sort by number of wallets (descending)
+                groups_df = pd.DataFrame(balance_groups)
+                groups_df = groups_df.sort_values(by=['Number of Wallets', 'Raw Balance'], ascending=[False, False])
+                
+                # Display the summary table
+                st.dataframe(
+                    groups_df[['Group Balance', 'Number of Wallets']].reset_index(drop=True),
+                    use_container_width=True
+                )
+                
+                # Add some metrics
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Total Groups", len(groups_df))
+                with col2:
+                    st.metric("Total Wallets in Groups", groups_df['Number of Wallets'].sum())
+            else:
+                st.info("No balance groups found")
+
+        with tab4:
             st.subheader("Historical Data")
 
             # Get wallet history
