@@ -172,11 +172,18 @@ def main():
                     st.metric("Total Wallets with Duplicates", 
                              len(duplicate_wallets))
 
-                st.dataframe(
-                    duplicate_wallets[['clean_address', 'balance', 'first_in', 'last_in', 'last_out']].style.format({
-                        'balance': lambda x: format_balance(x)
-                    })
-                )
+                # Group the wallets by balance
+                balances = duplicate_wallets['balance'].unique()
+                
+                for balance in balances:
+                    group_wallets = duplicate_wallets[duplicate_wallets['balance'] == balance]
+                    st.markdown(f"### Group: {format_balance(balance)} - {len(group_wallets)} wallets")
+                    st.dataframe(
+                        group_wallets[['clean_address', 'balance', 'first_in', 'last_in', 'last_out']].style.format({
+                            'balance': lambda x: format_balance(x)
+                        })
+                    )
+                    st.markdown("---")
             else:
                 st.info("No wallets with duplicate balances found")
 
