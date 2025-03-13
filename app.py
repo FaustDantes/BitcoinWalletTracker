@@ -1,37 +1,18 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from src.scraper import BTCWalletScraper
-from src.database import Database
 from src.scheduler import DataCollectionScheduler
 import logging
 from src.logger_config import setup_logger
-import re
+from src.data_manager import (
+    format_balance, refresh_data, get_latest_wallet_data,
+    get_duplicate_balances, get_wallet_history, get_balance_groups
+)
 
 # Configure logging
 logger = setup_logger()
 
-# Initialize components
-db = Database()
-scraper = BTCWalletScraper()
+# Initialize scheduler
 scheduler = DataCollectionScheduler()
-
-def format_balance(balance):
-    """Format BTC balance with proper notation"""
-    if balance >= 1_000_000:
-        return f"{balance/1_000_000:.2f}M BTC"
-    elif balance >= 1_000:
-        return f"{balance/1_000:.2f}K BTC"
-    else:
-        return f"{balance:.2f} BTC"
-
-def extract_btc_address(text):
-    """Extract clean Bitcoin address from text"""
-    clean_text = re.sub(r'<[^>]+>', '', text).strip()
-    btc_pattern = r'[13][a-km-zA-HJ-NP-Z1-9]{25,34}'
-    match = re.search(btc_pattern, clean_text)
-    return match.group(0) if match else clean_text
 
 def main():
     # Custom CSS for grayscale theme
@@ -114,13 +95,11 @@ def main():
 
         if st.button("Refresh Data", use_container_width=True):
             with st.spinner("Fetching latest data..."):
-                try:
-                    wallets = scraper.scrape_wallets(pages_to_scan)
-                    db.store_wallets(wallets)
-                    st.success("Data updated successfully")
-                except Exception as e:
-                    st.error(f"Error updating data: {str(e)}")
-                    logger.error(f"Data refresh error: {str(e)}")
+                success, message = refresh_data(pages_to_scan)
+                if success:
+                    st.success(message)
+                else:
+                    st.error(message)
 
     # Tab selection
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -132,8 +111,7 @@ def main():
     ])
 
     try:
-        df = db.get_latest_wallets()
-        df['clean_address'] = df['address'].apply(extract_btc_address)
+        df = get_latest_wallet_data()
 
         with tab1:
             col1, col2, col3 = st.columns(3)
@@ -161,10 +139,9 @@ def main():
 
         with tab2:
             st.subheader("Wallets with Duplicate Balances")
-            duplicate_wallets = db.get_duplicate_balance_wallets()
+            duplicate_wallets = get_duplicate_balances()
 
             if not duplicate_wallets.empty:
-                duplicate_wallets['clean_address'] = duplicate_wallets['address'].apply(extract_btc_address)
                 col1, col2 = st.columns(2)
                 with col1:
                     st.metric("Total Duplicate Groups", 
@@ -175,7 +152,7 @@ def main():
 
                 # Group the wallets by balance
                 balances = duplicate_wallets['balance'].unique()
-                
+
                 for balance in balances:
                     group_wallets = duplicate_wallets[duplicate_wallets['balance'] == balance]
                     st.markdown(f"### Group: {format_balance(balance)} - {len(group_wallets)} wallets")
@@ -190,29 +167,18 @@ def main():
 
         with tab3:
             st.subheader("Balance Groups Summary")
-            duplicate_wallets = db.get_duplicate_balance_wallets()
-            
+            duplicate_wallets = get_duplicate_balances()
+
             if not duplicate_wallets.empty:
-                # Create summary dataframe with balance groups
-                balance_groups = []
-                for balance in duplicate_wallets['balance'].unique():
-                    group_wallets = duplicate_wallets[duplicate_wallets['balance'] == balance]
-                    balance_groups.append({
-                        'Group Balance': format_balance(balance),
-                        'Raw Balance': balance,
-                        'Number of Wallets': len(group_wallets)
-                    })
-                
-                # Convert to dataframe and sort by number of wallets (descending)
-                groups_df = pd.DataFrame(balance_groups)
-                groups_df = groups_df.sort_values(by=['Number of Wallets', 'Raw Balance'], ascending=[False, False])
-                
+                # Get balance groups summary
+                groups_df = get_balance_groups(duplicate_wallets)
+
                 # Display the summary table
                 st.dataframe(
                     groups_df[['Group Balance', 'Number of Wallets']].reset_index(drop=True),
                     use_container_width=True
                 )
-                
+
                 # Add some metrics
                 col1, col2 = st.columns(2)
                 with col1:
@@ -226,10 +192,8 @@ def main():
             st.subheader("Historical Data")
 
             # Get wallet history
-            history_df = db.get_wallet_history(limit=1000)
+            history_df = get_wallet_history(limit=1000)
             if not history_df.empty:
-                history_df['clean_address'] = history_df['address'].apply(extract_btc_address)
-
                 # Filter by address if specified
                 selected_address = st.selectbox(
                     "Filter by address",
@@ -259,7 +223,7 @@ def main():
                     mime="text/csv"
                 )
 
-        with tab4:
+        with tab5:
             st.subheader("Application Logs")
 
             # Log level filter
