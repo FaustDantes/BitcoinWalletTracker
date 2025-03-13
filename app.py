@@ -15,65 +15,9 @@ logger = setup_logger()
 scheduler = DataCollectionScheduler()
 
 def main():
-    # Custom CSS for grayscale theme
-    st.markdown("""
-        <style>
-        .stApp {
-            background-color: #1E1E1E;
-            color: #E0E0E0;
-        }
-        .stMetric {
-            background: #2D2D2D;
-            border-radius: 4px;
-            padding: 12px;
-            border: 1px solid #404040;
-        }
-        .stDataFrame {
-            background: #2D2D2D;
-            border-radius: 4px;
-        }
-        .stSelectbox, .stTextInput {
-            background: #2D2D2D;
-            border-radius: 4px;
-            border: 1px solid #404040;
-        }
-        h1, h2, h3 {
-            color: #E0E0E0;
-        }
-        .stButton button {
-            background-color: #2D2D2D;
-            color: #E0E0E0;
-            border: 1px solid #404040;
-        }
-        .stButton button:hover {
-            background-color: #404040;
-            color: #FFFFFF;
-        }
-        pre {
-            background: #2D2D2D;
-            padding: 10px;
-            border-radius: 4px;
-            border: 1px solid #404040;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 8px;
-            background-color: #2D2D2D;
-            padding: 8px;
-            border-radius: 4px;
-        }
-        .stTabs [data-baseweb="tab"] {
-            background-color: #404040;
-            color: #E0E0E0;
-            border-radius: 4px;
-        }
-        .stTabs [aria-selected="true"] {
-            background-color: #808080 !important;
-            color: #FFFFFF !important;
-        }
-        </style>
-    """, unsafe_allow_html=True)
+    # Load external CSS
+    with open("static/styles.css", "r") as css_file:
+        st.markdown(f"<style>{css_file.read()}</style>", unsafe_allow_html=True)
 
     st.title("Bitcoin Wallet Tracker")
     st.markdown("### Monitor Large Bitcoin Wallets")
@@ -81,7 +25,7 @@ def main():
     # Sidebar configuration
     with st.sidebar:
         st.markdown("""
-            <div style='background: #2D2D2D; padding: 20px; border-radius: 4px; border: 1px solid #404040;'>
+            <div class="settings-panel">
             <h3>Settings</h3>
             </div>
         """, unsafe_allow_html=True)
@@ -254,24 +198,18 @@ def main():
                     # Display logs with appropriate styling
                     for log in filtered_logs[-num_logs:]:
                         severity = log.split("]")[0].split("[")[-1] if "[" in log else "INFO"
-                        color = {
-                            "DEBUG": "#808080",
-                            "INFO": "#E0E0E0",
-                            "WARNING": "#FFA500",
-                            "ERROR": "#FF0000",
-                            "CRITICAL": "#FF0000"
-                        }.get(severity, "#E0E0E0")
+                        css_class = f"log-{severity.lower()}"
 
                         # Format timestamp if present
                         parts = log.split(" ", 1)
                         if len(parts) > 1:
                             timestamp, message = parts
-                            formatted_log = f"<span style='color: #808080'>{timestamp}</span> {message}"
+                            formatted_log = f"<span class='log-timestamp'>{timestamp}</span> {message}"
                         else:
                             formatted_log = log
 
                         st.markdown(
-                            f"<pre style='color: {color}'>{formatted_log}</pre>", 
+                            f"<pre class='{css_class}'>{formatted_log}</pre>", 
                             unsafe_allow_html=True
                         )
             except FileNotFoundError:
